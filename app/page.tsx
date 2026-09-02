@@ -58,12 +58,19 @@ export default function Home() {
       if (token) { session = { access_token: token, refresh_token: params.get('refresh_token') || undefined }; window.localStorage.setItem('hearth-cloud-session', JSON.stringify(session)); history.replaceState(null, '', window.location.pathname); }
     }
     if (session && SUPABASE_URL && SUPABASE_KEY) {
-      setCloudSession(session); setSyncState('loading');
-      cloudLoad(session).then((payload) => {
+      setSyncState('loading');
+      const connect = async () => {
+        let activeSession = session!;
+        if (activeSession.refresh_token) {
+          try { activeSession = await refreshCloudSession(activeSession.refresh_token); window.localStorage.setItem('hearth-cloud-session', JSON.stringify(activeSession)); } catch {}
+        }
+        setCloudSession(activeSession);
+        const payload = await cloudLoad(activeSession);
         if (payload) setData(payload);
         else { setData(emptyHousehold); setSetupOpen(true); }
         setSyncState('synced'); setReady(true);
-      }).catch(() => { setSyncState('local'); setReady(true); });
+      };
+      connect().catch(() => { setSyncState('local'); setReady(true); });
     } else setReady(true);
   }, []);
   useEffect(() => { if (ready) window.localStorage.setItem('hearth-money-v1', JSON.stringify(data)); }, [data, ready]);
@@ -121,11 +128,26 @@ function PlanRow({label,description,amount,color,percent}:{label:string;descript
 function getCloudSession(): CloudSession | null { try { return JSON.parse(window.localStorage.getItem('hearth-cloud-session') || 'null') as CloudSession | null; } catch { return null; } }
 function userId(token: string) { return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).sub as string; }
 async function cloudLoad(session: CloudSession): Promise<MoneyState | null> { const response = await fetch(`${SUPABASE_URL}/rest/v1/money_data?user_id=eq.${userId(session.access_token)}&select=payload`, { headers: { apikey: SUPABASE_KEY!, Authorization: `Bearer ${session.access_token}` } }); if (!response.ok) throw new Error('Sync failed'); const rows = await response.json() as { payload: MoneyState }[]; return rows[0]?.payload || null; }
+async function refreshCloudSession(refreshToken: string): Promise<CloudSession> { const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, { method: 'POST', headers: { apikey: SUPABASE_KEY!, 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: refreshToken }) }); const result = await response.json(); if (!response.ok || !result.access_token) throw new Error('Session expired'); return { access_token: result.access_token, refresh_token: result.refresh_token || refreshToken }; }
 async function cloudSave(session: CloudSession, payload: MoneyState) { const response = await fetch(`${SUPABASE_URL}/rest/v1/money_data?on_conflict=user_id`, { method: 'POST', headers: { apikey: SUPABASE_KEY!, Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ user_id: userId(session.access_token), payload, updated_at: new Date().toISOString() }) }); if (!response.ok) throw new Error('Sync failed'); }
 function CloudDialog({ session, onClose, onSignedOut }: { session: CloudSession | null; onClose: () => void; onSignedOut: () => void }) {
-  const [sent, setSent] = useState(false); const [error, setError] = useState('');
-  async function signIn(event: React.FormEvent<HTMLFormElement>) { event.preventDefault(); setError(''); const email = String(new FormData(event.currentTarget).get('email')); if (!SUPABASE_URL || !SUPABASE_KEY) { setError('Cloud sync is not configured yet. Follow the setup steps in the README.'); return; } const response = await fetch(`${SUPABASE_URL}/auth/v1/otp`, { method: 'POST', headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ email, create_user: true, options: { emailRedirectTo: window.location.href.split('#')[0] } }) }); if (response.ok) setSent(true); else setError('We could not send the sign-in link. Check the email and cloud settings.'); }
-  return <div className="fixed inset-0 z-[60] grid place-items-center bg-black/25 p-4 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className="w-full max-w-md rounded-3xl bg-card p-7 shadow-2xl"><div className="flex items-start justify-between"><div className="grid size-11 place-items-center rounded-2xl bg-[var(--sage-light)] text-primary"><Cloud/></div><button onClick={onClose} className="rounded-xl p-2 hover:bg-muted"><X size={19}/></button></div><h2 className="mt-5 font-display text-2xl font-bold">Sync across devices</h2>{session ? <><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Your household data is encrypted in transit and saved to your private cloud account.</p><button onClick={onSignedOut} className="secondary-action mt-6 w-full">Turn off cloud sync</button></> : sent ? <p className="mt-4 rounded-2xl bg-[var(--sage-light)] p-4 text-sm font-semibold">Check your email and open the secure sign-in link on this device.</p> : <><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Use the same email on every device. We will send a password-free sign-in link.</p><form onSubmit={signIn} className="mt-6 space-y-3"><Field label="Email address"><input required name="email" type="email" placeholder="you@example.com"/></Field>{error && <p className="text-xs font-semibold text-red-700">{error}</p>}<button className="primary-action w-full">Email me a sign-in link</button></form></>}</section></div>;
+  const [mode, setMode] = useState<'login' | 'signup'>('login'); const [notice, setNotice] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  async function authenticate(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setError(''); setNotice(''); setBusy(true);
+    const form = new FormData(event.currentTarget); const email = String(form.get('email')).trim(); const password = String(form.get('password'));
+    if (!SUPABASE_URL || !SUPABASE_KEY) { setError('Cloud sync is not configured yet.'); setBusy(false); return; }
+    const endpoint = mode === 'login' ? `${SUPABASE_URL}/auth/v1/token?grant_type=password` : `${SUPABASE_URL}/auth/v1/signup`;
+    try {
+      const response = await fetch(endpoint, { method: 'POST', headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+      const result = await response.json();
+      if (!response.ok) { setError(result.msg || result.error_description || result.message || result.error || 'Authentication failed.'); return; }
+      if (result.access_token) {
+        const nextSession = { access_token: result.access_token, refresh_token: result.refresh_token || undefined };
+        window.localStorage.setItem('hearth-cloud-session', JSON.stringify(nextSession)); window.location.reload();
+      } else { setNotice('Account created. Check your email to confirm it, then return here and log in.'); setMode('login'); }
+    } catch { setError('Could not reach Supabase. Check your connection and try again.'); } finally { setBusy(false); }
+  }
+  return <div className="fixed inset-0 z-[60] grid place-items-center bg-black/25 p-4 backdrop-blur-sm" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}><section className="w-full max-w-md rounded-3xl bg-card p-7 shadow-2xl"><div className="flex items-start justify-between"><div className="grid size-11 place-items-center rounded-2xl bg-[var(--sage-light)] text-primary"><Cloud/></div><button onClick={onClose} className="rounded-xl p-2 hover:bg-muted" aria-label="Close"><X size={19}/></button></div><h2 className="mt-5 font-display text-2xl font-bold">{session ? 'Cloud account' : mode === 'login' ? 'Log in to Hearth' : 'Create your account'}</h2>{session ? <><p className="mt-2 text-sm leading-relaxed text-muted-foreground">Your household is synced. Use the same email and password to log in on any device.</p><button onClick={onSignedOut} className="secondary-action mt-6 w-full">Log out on this device</button></> : <><p className="mt-2 text-sm leading-relaxed text-muted-foreground">{mode === 'login' ? 'Access your household securely from any device.' : 'Create one account for your private household data.'}</p><div className="mt-5 grid grid-cols-2 rounded-xl bg-muted p-1"><button type="button" onClick={() => { setMode('login'); setError(''); }} className={`rounded-lg py-2 text-sm font-bold ${mode === 'login' ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}>Log in</button><button type="button" onClick={() => { setMode('signup'); setError(''); }} className={`rounded-lg py-2 text-sm font-bold ${mode === 'signup' ? 'bg-card shadow-sm' : 'text-muted-foreground'}`}>Sign up</button></div><form onSubmit={authenticate} className="mt-5 space-y-3"><Field label="Email address"><input required autoComplete="email" name="email" type="email" placeholder="you@example.com"/></Field><Field label="Password"><input required minLength={6} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} name="password" type="password" placeholder="At least 6 characters"/></Field>{notice && <p className="rounded-xl bg-[var(--sage-light)] p-3 text-xs font-semibold text-emerald-800">{notice}</p>}{error && <p className="text-xs font-semibold text-red-700">{error}</p>}<button disabled={busy} className="primary-action w-full disabled:opacity-60">{busy ? 'Please wait…' : mode === 'login' ? 'Log in' : 'Create account'}</button></form></>}</section></div>;
 }
 
 function HouseholdDialog({ data, onChange, onClose }: { data: MoneyState; onChange: React.Dispatch<React.SetStateAction<MoneyState>>; onClose: () => void }) {
