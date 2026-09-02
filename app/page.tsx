@@ -39,7 +39,7 @@ const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 type CloudSession = { access_token: string; refresh_token?: string };
 
 export default function Home() {
-  const [data, setData] = useState<MoneyState>(starter);
+  const [data, setData] = useState<MoneyState>(emptyHousehold);
   const [ready, setReady] = useState(false);
   const [active, setActive] = useState<'overview' | 'transactions' | 'planning'>('overview');
   const [entryOpen, setEntryOpen] = useState(false);
