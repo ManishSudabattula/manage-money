@@ -49,6 +49,7 @@ export default function Home() {
   const [syncState, setSyncState] = useState<'local' | 'loading' | 'synced'>('local');
   const [signInOpen, setSignInOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [welcomeName, setWelcomeName] = useState('');
 
   useEffect(() => {
     const saved = window.localStorage.getItem('hearth-money-v1'); if (saved) { try { setData(JSON.parse(saved) as MoneyState); } catch {} }
@@ -65,6 +66,7 @@ export default function Home() {
           try { activeSession = await refreshCloudSession(activeSession.refresh_token); window.localStorage.setItem('hearth-cloud-session', JSON.stringify(activeSession)); } catch {}
         }
         setCloudSession(activeSession);
+        if (window.sessionStorage.getItem('hearth-welcome')) { setWelcomeName(userEmail(activeSession.access_token).split('@')[0]); window.sessionStorage.removeItem('hearth-welcome'); window.setTimeout(() => setWelcomeName(''), 4500); }
         const payload = await cloudLoad(activeSession);
         if (payload) setData(payload);
         else { setData(emptyHousehold); setSetupOpen(true); }
@@ -112,6 +114,7 @@ export default function Home() {
         {active === 'transactions' && <TransactionsView data={data} onAdd={(kind) => {setEntryKind(kind);setEntryOpen(true)}}/>}{active === 'planning' && <PlanningView metrics={metrics}/>} 
       </section>
     </div>
+    {welcomeName && <div role="status" className="fixed left-1/2 top-20 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 rounded-2xl border border-emerald-200 bg-card p-4 shadow-xl"><div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[var(--sage-light)] text-primary"><Cloud size={18}/></span><div className="flex-1"><p className="font-display text-lg font-bold">Hi, {welcomeName}!</p><p className="text-xs text-muted-foreground">Welcome back. Your household is synced and ready.</p></div><button onClick={() => setWelcomeName('')} className="rounded-lg p-1 text-muted-foreground hover:bg-muted" aria-label="Dismiss welcome"><X size={16}/></button></div></div>}
     {entryOpen && <div className="fixed inset-0 z-50 grid place-items-end bg-black/25 backdrop-blur-sm sm:place-items-center sm:p-4" onMouseDown={(e)=>{if(e.target===e.currentTarget)setEntryOpen(false)}}><section className="w-full max-w-lg rounded-t-3xl bg-card p-5 shadow-2xl sm:rounded-3xl sm:p-7"><div className="mb-6 flex items-start justify-between"><div><p className="eyebrow">New entry</p><h2 className="font-display text-2xl font-bold">Add money {entryKind==='income'?'coming in':'going out'}</h2></div><button className="rounded-xl p-2 hover:bg-muted" onClick={()=>setEntryOpen(false)} aria-label="Close"><X size={20}/></button></div><div className="mb-5 grid grid-cols-2 rounded-xl bg-muted p-1"><button onClick={()=>setEntryKind('expense')} className={`rounded-lg py-2 text-sm font-bold ${entryKind==='expense'?'bg-card shadow-sm':'text-muted-foreground'}`}>Expense</button><button onClick={()=>setEntryKind('income')} className={`rounded-lg py-2 text-sm font-bold ${entryKind==='income'?'bg-card shadow-sm':'text-muted-foreground'}`}>Income</button></div><form onSubmit={submitEntry} className="grid gap-4 sm:grid-cols-2"><Field label="Amount"><input autoFocus required min="0.01" step="0.01" name="amount" type="number" placeholder="0.00"/></Field><Field label="Date"><input required name="date" type="date" defaultValue={new Date().toISOString().slice(0,10)}/></Field><Field label="Description"><input required name="description" placeholder={entryKind==='income'?'e.g. Weekend tips':'e.g. Grocery run'}/></Field><Field label="Category"><select name="category">{(entryKind==='income'?incomeCategories:expenseCategories).map(c=><option key={c}>{c}</option>)}</select></Field><Field label={entryKind==='income'?'Earned by':'Paid by'}><select name="personId">{entryKind === 'income' && <option value="joint">Joint household</option>}{activePeople.map(p=><option value={p.id} key={p.id}>{p.name}</option>)}</select></Field><Field label="Account"><select name="accountId">{data.accounts.map(a=><option value={a.id} key={a.id}>{a.name}</option>)}</select></Field><button className="mt-2 h-11 rounded-xl bg-primary font-bold text-primary-foreground sm:col-span-2">Save {entryKind}</button></form></section></div>}
     {signInOpen && <CloudDialog session={cloudSession} onClose={() => setSignInOpen(false)} onSignedOut={() => { window.localStorage.removeItem('hearth-cloud-session'); setCloudSession(null); setSyncState('local'); setSignInOpen(false); }} />}
     {setupOpen && <HouseholdDialog data={data} onChange={setData} onClose={() => setSetupOpen(false)} />}
@@ -131,7 +134,9 @@ function PlanningView({metrics}:{metrics:{available:number;rate:number}}){const 
 function PlanRow({label,description,amount,color,percent}:{label:string;description:string;amount:number;color:string;percent:number}){return <div><div className="mb-2 flex items-center"><span className="mr-3 size-3 rounded-full" style={{background:color}}/><div className="flex-1"><p className="text-sm font-bold">{label}</p><p className="text-xs text-muted-foreground">{description}</p></div><strong>{money.format(amount)}</strong></div><div className="ml-6 h-2 rounded-full bg-muted"><div className="h-full rounded-full" style={{width:`${percent}%`,background:color}}/></div></div>}
 
 function getCloudSession(): CloudSession | null { try { return JSON.parse(window.localStorage.getItem('hearth-cloud-session') || 'null') as CloudSession | null; } catch { return null; } }
-function userId(token: string) { return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).sub as string; }
+function tokenPayload(token: string) { return JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))) as { sub: string; email?: string }; }
+function userId(token: string) { return tokenPayload(token).sub; }
+function userEmail(token: string) { return tokenPayload(token).email || 'there'; }
 async function cloudLoad(session: CloudSession): Promise<MoneyState | null> { const response = await fetch(`${SUPABASE_URL}/rest/v1/money_data?user_id=eq.${userId(session.access_token)}&select=payload`, { headers: { apikey: SUPABASE_KEY!, Authorization: `Bearer ${session.access_token}` } }); if (!response.ok) throw new Error('Sync failed'); const rows = await response.json() as { payload: MoneyState }[]; return rows[0]?.payload || null; }
 async function refreshCloudSession(refreshToken: string): Promise<CloudSession> { const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, { method: 'POST', headers: { apikey: SUPABASE_KEY!, 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: refreshToken }) }); const result = await response.json(); if (!response.ok || !result.access_token) throw new Error('Session expired'); return { access_token: result.access_token, refresh_token: result.refresh_token || refreshToken }; }
 async function cloudSave(session: CloudSession, payload: MoneyState) { const response = await fetch(`${SUPABASE_URL}/rest/v1/money_data?on_conflict=user_id`, { method: 'POST', headers: { apikey: SUPABASE_KEY!, Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ user_id: userId(session.access_token), payload, updated_at: new Date().toISOString() }) }); if (!response.ok) throw new Error('Sync failed'); }
@@ -148,7 +153,7 @@ function CloudDialog({ session, onClose, onSignedOut }: { session: CloudSession 
       if (!response.ok) { setError(result.msg || result.error_description || result.message || result.error || 'Authentication failed.'); return; }
       if (result.access_token) {
         const nextSession = { access_token: result.access_token, refresh_token: result.refresh_token || undefined };
-        window.localStorage.setItem('hearth-cloud-session', JSON.stringify(nextSession)); window.location.reload();
+        window.localStorage.setItem('hearth-cloud-session', JSON.stringify(nextSession)); window.sessionStorage.setItem('hearth-welcome', '1'); window.location.reload();
       } else { setNotice('Account created. Check your email to confirm it, then return here and log in.'); setMode('login'); }
     } catch { setError('Could not reach Supabase. Check your connection and try again.'); } finally { setBusy(false); }
   }
