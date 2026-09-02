@@ -28,6 +28,8 @@ const starter: MoneyState = {
   ], savingsGoal: 3000,
 };
 
+const emptyHousehold: MoneyState = { accounts: [], people: [], transactions: [], savingsGoal: 0 };
+
 const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
 const exactMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 const expenseCategories = ['Housing', 'Groceries', 'Dining', 'Transport', 'Utilities', 'Shopping', 'Health', 'Entertainment', 'Other'];
@@ -57,7 +59,11 @@ export default function Home() {
     }
     if (session && SUPABASE_URL && SUPABASE_KEY) {
       setCloudSession(session); setSyncState('loading');
-      cloudLoad(session).then((payload) => { if (payload) setData(payload); setSyncState('synced'); setReady(true); }).catch(() => { setSyncState('local'); setReady(true); });
+      cloudLoad(session).then((payload) => {
+        if (payload) setData(payload);
+        else { setData(emptyHousehold); setSetupOpen(true); }
+        setSyncState('synced'); setReady(true);
+      }).catch(() => { setSyncState('local'); setReady(true); });
     } else setReady(true);
   }, []);
   useEffect(() => { if (ready) window.localStorage.setItem('hearth-money-v1', JSON.stringify(data)); }, [data, ready]);
